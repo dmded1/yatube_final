@@ -95,10 +95,6 @@ def add_comment(request, post_id):
     return redirect('posts:post_detail', post_id=post_id)
 
 
-def page_not_found(request, exception):
-    return render(request, 'core/404.html', {'path': request.path}, status=404)
-
-
 @login_required
 def follow_index(request):
     # информация о текущем пользователе доступна в переменной request.user
