@@ -1,11 +1,13 @@
+from http import HTTPStatus
+
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from http import HTTPStatus
-
 from posts.models import Post, Group, User
-from posts.tests.constants import (INDEX_URL, GROUP_POSTS_URL,
-                                   PROFILE_URL, POST_CREATE_URL)
+from posts.tests.constants import (
+    INDEX_URL, GROUP_POSTS_URL, PROFILE_URL,
+    POST_CREATE_URL, FOLLOW_INDEX_URL
+)
 
 
 class PostURLTests(TestCase):
@@ -30,6 +32,7 @@ class PostURLTests(TestCase):
             GROUP_POSTS_URL,
             PROFILE_URL,
             cls.POST_DETAIL_URL,
+            FOLLOW_INDEX_URL
         ]
         cls.template_names = {
             INDEX_URL: 'posts/index.html',
@@ -38,6 +41,7 @@ class PostURLTests(TestCase):
             cls.POST_DETAIL_URL: 'posts/post_detail.html',
             cls.POST_EDIT_URL: 'posts/create_post.html',
             POST_CREATE_URL: 'posts/create_post.html',
+            FOLLOW_INDEX_URL: 'posts/follow.html'
         }
 
     def setUp(self):
@@ -49,7 +53,7 @@ class PostURLTests(TestCase):
         '''Проверяет доступность страниц'''
         for address in self.urls:
             with self.subTest(address):
-                response = self.guest_client.get(address)
+                response = self.authorized_client.get(address)
                 self.assertEqual(response.status_code, HTTPStatus.OK)
 
     def test_urls_templates(self):

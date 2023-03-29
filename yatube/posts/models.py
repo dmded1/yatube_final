@@ -11,6 +11,9 @@ class Group(models.Model):
     slug = models.SlugField(unique=True, verbose_name='Адрес')
     description = models.TextField(verbose_name='Описание')
 
+    class Meta:
+        verbose_name_plural = 'Группы'
+
     def __str__(self):
         return self.title
 
@@ -43,6 +46,7 @@ class Post(models.Model):
 
     class Meta:
         ordering = ['-pub_date']
+        verbose_name_plural = 'Посты'
 
     def __str__(self):
         return self.text[:15]
@@ -70,15 +74,28 @@ class Comment(models.Model):
         verbose_name='Дата публикации'
     )
 
+    class Meta:
+        verbose_name_plural = 'Комментарии'
+
+    def __str__(self):
+        return self.text
+
 
 class Follow(models.Model):
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
-        related_name='follower'
+        related_name='follower',
     )
     author = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
         related_name='following'
     )
+
+    class Meta:
+        verbose_name_plural = 'Подписки'
+        constraints = [
+            models.UniqueConstraint(fields=['author', 'user'],
+                                    name='unique_follower')
+        ]

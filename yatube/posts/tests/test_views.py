@@ -18,6 +18,7 @@ from posts.tests.constants import (INDEX_URL, GROUP_POSTS_URL,
 TEMP_MEDIA_ROOT = tempfile.mkdtemp(dir=settings.BASE_DIR)
 
 
+@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
 class PostPagesTests(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -28,10 +29,24 @@ class PostPagesTests(TestCase):
             slug='test-slug',
             description='Тестовое описание',
         )
+        cls.small_gif = (
+            b'\x47\x49\x46\x38\x39\x61\x02\x00'
+            b'\x01\x00\x80\x00\x00\x00\x00\x00'
+            b'\xFF\xFF\xFF\x21\xF9\x04\x00\x00'
+            b'\x00\x00\x00\x2C\x00\x00\x00\x00'
+            b'\x02\x00\x01\x00\x00\x02\x02\x0C'
+            b'\x0A\x00\x3B'
+        )
+        cls.uploaded = SimpleUploadedFile(
+            name='small.gif',
+            content=cls.small_gif,
+            content_type='image/gif'
+        )
         cls.post = Post.objects.create(
             author=cls.user,
             text='Тестовый пост',
-            group=cls.group
+            group=cls.group,
+            image=cls.uploaded
         )
         cls.comment = Comment.objects.create(
             post=cls.post,
@@ -49,6 +64,14 @@ class PostPagesTests(TestCase):
             cls.POST_EDIT_URL: 'posts/create_post.html',
             POST_CREATE_URL: 'posts/create_post.html',
         }
+        cls.templates = (
+            INDEX_URL, PROFILE_URL, GROUP_POSTS_URL
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        shutil.rmtree(TEMP_MEDIA_ROOT, ignore_errors=True)
 
     def setUp(self):
         self.guest_client = Client()
@@ -56,19 +79,18 @@ class PostPagesTests(TestCase):
         self.authorized_client.force_login(self.user)
         cache.clear()
 
-    def test_pages_uses_correct_template(self):
-        '''Проверяем, что страница использует соответствующий шаблон'''
-        for template, reverse_name in self.templates_pages_names.items():
-            with self.subTest(reverse_name=reverse_name):
-                response = self.authorized_client.get(template)
-                self.assertTemplateUsed(response, reverse_name)
-
     def test_index_show_correct_context(self):
         '''Проверяем корректность контекста при передаче в шаблон
         для страницы index'''
         response = self.guest_client.get(INDEX_URL)
         expected = list(Post.objects.select_related('author').all())
         self.assertEqual(list(response.context['page_obj']), expected)
+        first_post = list(response.context['page_obj'])[0]
+        self.assertEqual(first_post.text, self.post.text)
+        self.assertEqual(first_post.author.username, self.post.author.username)
+        self.assertEqual(first_post.pub_date, self.post.pub_date)
+        self.assertEqual(first_post.group.title, self.post.group.title)
+        self.assertEqual(first_post.group.slug, self.post.group.slug)
 
     def test_group_list_show_correct_context(self):
         '''Проверяем корректность контекста при передаче в шаблон
@@ -76,6 +98,8 @@ class PostPagesTests(TestCase):
         response = self.guest_client.get(GROUP_POSTS_URL)
         expected = list(Post.objects.filter(group_id=self.group.id))
         self.assertEqual(list(response.context['page_obj']), expected)
+        expected_group = self.group
+        self.assertEqual(response.context['group'], expected_group)
 
     def test_profile_show_correct_context(self):
         '''Проверяем корректность контекста при передаче в шаблон
@@ -83,11 +107,13 @@ class PostPagesTests(TestCase):
         response = self.guest_client.get(PROFILE_URL)
         expected = list(Post.objects.filter(author_id=self.user.id))
         self.assertEqual(list(response.context['page_obj']), expected)
+        expected_author = self.post.author
+        self.assertEqual(response.context['author'], expected_author)
 
     def test_post_detail_show_correct_context(self):
         '''Проверяем корректность контекста при передаче в шаблон
         для страницы с детальным постом'''
-        response = self.guest_client.get(self.POST_DETAIL_URL)
+        response = self.authorized_client.get(self.POST_DETAIL_URL)
         self.assertEqual(response.context.get('post').text, self.post.text)
         self.assertEqual(response.context.get('post').author, self.post.author)
         self.assertEqual(response.context.get('post').group, self.post.group)
@@ -97,8 +123,9 @@ class PostPagesTests(TestCase):
         для страницы редактирования поста'''
         response = self.authorized_client.get(self.POST_EDIT_URL)
         form_fields = {
-            'text': forms.fields.CharField,
-            'group': forms.models.ModelChoiceField,
+            'text': forms.CharField,
+            'group': forms.ModelChoiceField,
+            'image': forms.ImageField,
         }
         for field_name, field_type in form_fields.items():
             with self.subTest(name=field_name, type=field_type):
@@ -110,8 +137,9 @@ class PostPagesTests(TestCase):
         для страницы создания нового поста'''
         response = self.authorized_client.get(POST_CREATE_URL)
         form_fields = {
-            'text': forms.fields.CharField,
-            'group': forms.models.ModelChoiceField,
+            'text': forms.CharField,
+            'group': forms.ModelChoiceField,
+            'image': forms.ImageField,
         }
         for field_name, field_type in form_fields.items():
             with self.subTest(name=field_name, type=field_type):
@@ -143,11 +171,19 @@ class PostPagesTests(TestCase):
                 form_field = response.context['page_obj']
                 self.assertNotIn(expected, form_field)
 
-    def test_comments_only_for_authorized(self):
-        '''Проверяем, что комментировать посты
-        может только авторизованный пользователь'''
-        response = self.guest_client.get(self.POST_DETAIL_URL)
-        self.assertNotContains(response, self.comment)
+    def test_commenting_guest_user_cannot_comment(self):
+        '''Комментировать может только авторизованный пользователь'''
+        form_data = {
+            'text': 'Новый комментарий',
+        }
+        response1 = self.guest_client.get(self.POST_DETAIL_URL)
+        self.assertNotContains(response1, form_data['text'])
+        response2 = self.guest_client.post(
+            reverse('posts:add_comment', args=[self.TEST_ID]),
+            data=form_data,
+            follow=True
+        )
+        self.assertNotContains(response2, form_data['text'])
 
     def test_new_comment_on_post_detail(self):
         '''После успешной отправки комментарий появляется на странице поста'''
@@ -182,6 +218,30 @@ class PostPagesTests(TestCase):
         response2 = self.authorized_client.get(FOLLOW_INDEX_URL)
         self.assertEqual(len(response2.context['page_obj']), 0)
 
+    def test_image_in_context_for_index_profile_group_list_pages(self):
+        '''При выводе поста с картинкой изображение передаётся
+        в словаре context на страницах index, profile, group_list'''
+        for url in self.templates:
+            with self.subTest(url):
+                response = self.guest_client.get(url)
+                obj = response.context['page_obj'][0]
+                self.assertEqual(obj.image, self.post.image)
+
+    def test_image_in_context_for_post_detail_page(self):
+        '''При выводе поста с картинкой изображение передаётся
+        в словаре context на странице post_detail'''
+        response = self.authorized_client.get(self.POST_DETAIL_URL)
+        obj = response.context['post']
+        self.assertEqual(obj.image, self.post.image)
+
+    def test_image_in_page(self):
+        '''При отправке поста с картинкой через форму PostForm
+        создаётся запись в базе данных.'''
+        self.assertTrue(
+            Post.objects.filter(text='Тестовый пост',
+                                image='posts/small.gif').exists()
+        )
+
 
 class PaginatorViewsTest(TestCase):
     @classmethod
@@ -214,74 +274,3 @@ class PaginatorViewsTest(TestCase):
             with self.subTest(reverse_name=reverse_name):
                 response = self.client.get(reverse_name)
                 self.assertEqual(len(response.context['page_obj']), 10)
-
-
-@override_settings(MEDIA_ROOT=TEMP_MEDIA_ROOT)
-class PicturesTest(TestCase):
-    @classmethod
-    def setUpClass(cls):
-        super(PicturesTest, cls).setUpClass()
-        cls.user = User.objects.create(username='unknown')
-        cls.group = Group.objects.create(
-            title='Тестовая группа',
-            slug='test-slug',
-            description='Тестовое описание',
-        )
-        cls.small_gif = (
-            b'\x47\x49\x46\x38\x39\x61\x02\x00'
-            b'\x01\x00\x80\x00\x00\x00\x00\x00'
-            b'\xFF\xFF\xFF\x21\xF9\x04\x00\x00'
-            b'\x00\x00\x00\x2C\x00\x00\x00\x00'
-            b'\x02\x00\x01\x00\x00\x02\x02\x0C'
-            b'\x0A\x00\x3B'
-        )
-        cls.uploaded = SimpleUploadedFile(
-            name='small.gif',
-            content=cls.small_gif,
-            content_type='image/gif'
-        )
-        cls.post = Post.objects.create(
-            author=cls.user,
-            text='Тестовый пост',
-            group=cls.group,
-            image=cls.uploaded
-        )
-        cls.TEST_ID = cls.post.id
-        cls.POST_DETAIL_URL = reverse(
-            'posts:post_detail', kwargs={'post_id': cls.TEST_ID}
-        )
-        cls.templates = (
-            INDEX_URL, PROFILE_URL, GROUP_POSTS_URL
-        )
-
-    @classmethod
-    def tearDownClass(cls):
-        super().tearDownClass()
-        shutil.rmtree(TEMP_MEDIA_ROOT, ignore_errors=True)
-
-    def setUp(self):
-        self.guest_client = Client()
-
-    def test_image_in_context_for_index_profile_group_list_pages(self):
-        '''При выводе поста с картинкой изображение передаётся
-        в словаре context на страницах index, profile, group_list'''
-        for url in self.templates:
-            with self.subTest(url):
-                response = self.guest_client.get(url)
-                obj = response.context['page_obj'][0]
-                self.assertEqual(obj.image, self.post.image)
-
-    def test_image_in_context_for_post_detail_page(self):
-        '''При выводе поста с картинкой изображение передаётся
-        в словаре context на странице post_detail'''
-        response = self.guest_client.get(self.POST_DETAIL_URL)
-        obj = response.context['post']
-        self.assertEqual(obj.image, self.post.image)
-
-    def test_image_in_page(self):
-        '''При отправке поста с картинкой через форму PostForm
-        создаётся запись в базе данных.'''
-        self.assertTrue(
-            Post.objects.filter(text='Тестовый пост',
-                                image='posts/small.gif').exists()
-        )
